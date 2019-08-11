@@ -4,51 +4,125 @@ const bodyParser = require('body-parser')
 const cors = require('cors')
 const Sequelize = require('sequelize')
 
-
-const databaseUrl = 'postgres://postgres:pass@localhost:5432/postgres'
+const databaseUrl = process.env.DATABASE_URL || 'postgres://postgres:pass@localhost:5432/postgres'
 const db = new Sequelize(databaseUrl)
 
 db
-  .sync({ force: false})
+  .sync({ force: false })
   .then(() => console.log('Database synced'))
 
+const Message = db.define(
+  'message',
+  {
+    text: Sequelize.STRING,
+    user: Sequelize.STRING
+  }
+)
+
+const Channel = db.define(
+  'channel',
+  {
+    name: Sequelize.STRING
+  }
+)
+
+Message.belongsTo(Channel)
+Channel.hasMany(Message)
+
+const stream = new Sse()
+
 const app = express()
-const port = process.env.PORT || 5000
 
 const middleware = cors()
 app.use(middleware)
 
-const messages = ['hello world']
-
-// const data = JSON.stringify(messages)
-const Message = db.define('message',{ text: Sequelize.STRING })
-const stream = new Sse()
-
 const jsonParser = bodyParser.json()
 app.use(jsonParser)
 
-app.get('/stream',
-  async (req, res) => {
-    const messages = await Message.finAll()
-    const data = JSON.stringify(messages)
+app.get(
+  '/stream',
+  async (request, response) => {
+    const channels = await Channel
+      .findAll({ include: [Message] })
+
+    const data = JSON.stringify(channels)
     stream.updateInit(data)
 
-    stream.init(req, res)
+    stream.init(request, response)
   }
 )
 
-app.post('/message',
-  async (req, res) => {
-    const { message } = req.body
-    const entity = await Message.create({ text: message })
-    const messages = await Message.findAll()
-    const data = JSON.stringify(messages)
+app.post(
+  '/message',
+  async (request, response) => {
+    console.log('request.body test:', request.body)
+    const {
+      message,
+      user,
+      channelId
+    } = request.body
+
+    const entity = await Message.create({
+      text: message,
+      user,
+      channelId
+    })
+
+    console.log('entity test:', entity)
+
+    const channels = await Channel.findAll({
+      include: [Message]
+    })
+
+    const data = JSON.stringify(channels)
 
     stream.updateInit(data)
     stream.send(data)
 
-    res.send(entity)
+    response.send(entity)
   }
 )
 
-app.listen(port, () => console.log(`Listening on :${port}`))
+app.post(
+  '/channel',
+  async (request, response) => {
+    const channel = await Channel.create(request.body)
+
+    const channels = await Channel.findAll({
+      include: [Message]
+    })
+
+    const data = JSON.stringify(channels)
+
+    stream.updateInit(data)
+    stream.send(data)
+
+    response.send(channel)
+  }
+)
+
+app.delete('/channel/:id', async (request, response) => {
+  const channel = await Channel.destroy({
+    where: {
+      id: request.params.id
+    }
+  })
+
+  const channels = await Channel.findAll({
+    include: [Message]
+  })
+
+  const data = JSON.stringify(channels)
+
+  stream.updateInit(data)
+  stream.send(data)
+
+  response.send()
+})
+
+const port = process.env.PORT || 5000
+
+app.listen(
+  port,
+  () => console.log(`Listening on :${port}`)
+)
